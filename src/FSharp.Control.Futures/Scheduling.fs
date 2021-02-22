@@ -54,17 +54,14 @@ module private SchedulerImpl =
                 | Poll.Pending -> Poll.Pending
 
 
-    type ThreadPoolTask<'a>(future: Future<'a>, waiter: IVarJoinHandle<'a>) =
+    type ThreadPoolTask<'a>(future: Future<'a>, waiter: IVarJoinHandle<'a>, scheduler: ThreadPoolScheduler) =
         let syncPoll = obj()
-
-        member this.PushInThreadPool() =
-            ThreadPool.QueueUserWorkItem(fun _ -> do this.Run()) |> ignore
 
         member this.Run() =
             lock syncPoll ^fun () ->
                 let waker () =
                     lock syncPoll ^fun () ->
-                        this.PushInThreadPool()
+                        scheduler.RunTask(this)
                 try
                     let x = Future.Core.poll waker future
                     match x with
@@ -74,12 +71,14 @@ module private SchedulerImpl =
                 with e ->
                     waiter.Put(Error e)
 
-    type ThreadPoolScheduler() =
+    and ThreadPoolScheduler() =
+        member _.RunTask(task: ThreadPoolTask<'a>) =
+            ThreadPool.QueueUserWorkItem(fun _ -> do task.Run()) |> ignore
         interface IScheduler with
             member this.Spawn(fut: Future<'a>) =
                 let handle = IVarJoinHandle<'a>()
-                let task = ThreadPoolTask<'a>(fut, handle)
-                task.PushInThreadPool()
+                let task = ThreadPoolTask<'a>(fut, handle, this)
+                this.RunTask(task)
                 handle :> IJoinHandle<'a>
 
             member _.Dispose() = ()
